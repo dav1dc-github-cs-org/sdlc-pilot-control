@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-require_tools
+require_tools gh
 validate_common "$ROOT"
 SDLC_MODE=verify
 load_control "$CONTROL_ARG"

@@ -59,8 +59,8 @@ needs_change() {
   esac
 }
 
-require_tools() { # [local]: local skips the GitHub CLI for registry-only edits
-  [ "${1-}" = local ] || command -v gh >/dev/null 2>&1 || die 'the GitHub CLI (gh) is required: https://cli.github.com'
+require_tools() { # gh|local: local skips the GitHub CLI for registry-only edits
+  [ "$1" = local ] || command -v gh >/dev/null 2>&1 || die 'the GitHub CLI (gh) is required: https://cli.github.com'
   command -v jq >/dev/null 2>&1 || die 'jq is required: https://jqlang.org'
   SDLC_WORK=$(mktemp -d "${TMPDIR:-/tmp}/sdlc-target.XXXXXX")
   trap 'rm -rf "$SDLC_WORK"' EXIT

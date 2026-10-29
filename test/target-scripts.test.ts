@@ -203,7 +203,7 @@ test('setup --apply makes each planned change once and renders the caller the co
   const written = parseRegistry(JSON.parse(result.after), { id: 1, repository: control });
   assert.equal(result.after, `${JSON.stringify(written, null, 2)}\n`);
   assert.deepEqual({ ...written.targets[0], activatedAt: undefined }, { ...entry(), activatedAt: undefined });
-  assert.match(result.stdout, /https:\/\/github.com\/ctl-org\/app\/pull\/7/);
+  assert.ok(result.stdout.includes('https://github.com/ctl-org/app/pull/7'), result.stdout);
 });
 
 test('setup --apply refuses every change when any check fails', { skip }, () => {
@@ -289,7 +289,8 @@ test('verify fails when the caller differs from the rendered template', { skip }
   const result = run(verifyScript, ['--target', target], table, registry(entry()));
   assert.equal(result.status, 1);
   assert.deepEqual(result.writes, []);
-  assert.match(result.stdout, /\[FAIL\].*differs from the template pinned.*merge https:\/\/github.com\/ctl-org\/app\/pull\/7/);
+  assert.match(result.stdout, /\[FAIL\].*differs from the template pinned.*merge /);
+  assert.ok(result.stdout.includes('https://github.com/ctl-org/app/pull/7'), result.stdout);
 });
 
 test('verify warns when the registry on the control default branch differs from the local file', { skip }, () => {

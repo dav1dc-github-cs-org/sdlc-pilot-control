@@ -88,7 +88,7 @@ if [ "$DISABLE" = 1 ]; then
   exit 0
 fi
 
-require_tools
+require_tools gh
 validate_common "$ROOT"
 load_control "$CONTROL_ARG"
 load_target "$TARGET_ARG"
