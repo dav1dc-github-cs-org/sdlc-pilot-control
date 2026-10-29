@@ -29,6 +29,40 @@ test('controller fails loudly when the worker actor gate cannot match the App', 
   assert.ok(steps.indexOf(guard) < steps.findIndex(step => step.run?.includes('src/main.ts')));
 });
 
+test('controller receives the App private key only while a foreign target is enabled', () => {
+  const workflow = read('sdlc-controller.yml');
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.target, {
+    description: 'Registered target repository ID from .github/sdlc/targets.json; leave empty for this repository',
+    required: false, type: 'string',
+  });
+  const steps = workflow.jobs.reconcile.steps as { id?: string; run?: string; env?: Record<string, string> }[];
+  const detect = steps.findIndex(step => step.id === 'targets');
+  const main = steps.findIndex(step => step.run === 'node src/main.ts');
+  assert.ok(detect >= 0 && detect < main);
+  assert.match(steps[detect]!.run!, /\.enabled == true/);
+  assert.equal(steps[detect]!.env, undefined);
+  assert.equal(steps[main]!.env!.SDLC_TARGET, '${{ inputs.target }}');
+  assert.equal(steps[main]!.env!.SDLC_APP_ID, '${{ vars.SDLC_APP_ID }}');
+  assert.equal(steps[main]!.env!.SDLC_APP_PRIVATE_KEY,
+    "${{ steps.targets.outputs.enabled == 'true' && secrets.SDLC_APP_PRIVATE_KEY || '' }}");
+  // No other step may read the key; the token action already holds it for the control-scoped token.
+  const readers = steps.filter(step => JSON.stringify(step).includes('secrets.SDLC_APP_PRIVATE_KEY'));
+  assert.equal(readers.length, 2);
+});
+
+test('the receipt callee and caller template stay credential-free and pinned', () => {
+  const callee = readFileSync('.github/workflows/sdlc-intake-receipt.yml', 'utf8');
+  assert.equal(/\$\{\{\s*secrets|github\.token|id-token|actions\/checkout/.test(callee), false);
+  const workflow = parse(callee);
+  assert.deepEqual(workflow.on, { workflow_call: {} });
+  assert.deepEqual(workflow.permissions, {});
+  for (const job of Object.values(workflow.jobs) as { permissions?: unknown }[]) assert.deepEqual(job.permissions, {});
+  const caller = parse(readFileSync('.github/sdlc/templates/sdlc-intake.yml', 'utf8'));
+  assert.deepEqual(caller.permissions, {});
+  assert.equal(caller.jobs.receipt.secrets, undefined);
+  assert.match(caller.jobs.receipt.uses, /^__CONTROL_REPOSITORY__\/\.github\/workflows\/sdlc-intake-receipt\.yml@__RECEIPT_REF__$/);
+});
+
 test('generated agents have no publishing credentials or direct write permissions', () => {
   const source = readFileSync('.github/workflows/sdlc-agent.md', 'utf8');
   const frontmatter = parse(source.split('---')[1]!);
@@ -115,7 +149,7 @@ test('preflight and integration workflows retain read-only credentials and the r
 });
 
 test('manual workflows pin actions to immutable commits and never persist git credentials', () => {
-  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml']) {
+  for (const name of ['ci.yml', 'sdlc-controller.yml', 'sdlc-checks.yml', 'sdlc-intake-receipt.yml']) {
     for (const job of Object.values(read(name).jobs) as { steps: { uses?: string; with?: Record<string, unknown> }[] }[]) {
       for (const step of job.steps) {
         if (step.uses) assert.match(step.uses, /@[a-f0-9]{40}$/);

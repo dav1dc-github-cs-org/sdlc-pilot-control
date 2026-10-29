@@ -324,7 +324,7 @@ export class GitHub implements Platform {
     delete record.needsMigration;
   }
 
-  private async ensureStateBranch(): Promise<void> {
+  async ensureStateBranch(): Promise<void> {
     try { await this.controlHead(this.policy.stateBranch); return; }
     catch (error) { if (!missing(error)) throw error; }
     const { data: tree } = await this.controlApi.git.createTree({ ...this.control, tree: [

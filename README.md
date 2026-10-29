@@ -231,15 +231,26 @@ compiler upgrades require deliberate review and validation.
 | [Validation](src/validate.ts) | Actual tests, coverage comparison, scanner-result enforcement |
 | [Policy](.github/sdlc/policy.json) | File restrictions, test discovery, thresholds, and execution budgets |
 | [Targets](src/targets.ts) | Foreign target registry, binding checks, and target-qualified run identity |
+| [Reconcile](src/reconcile.ts) | Issue and target selection, per-target failure isolation, stale-run rejection |
+| [Receipts](src/receipts.ts) | Authenticated intake receipts from registered targets and the scan cursor |
+| [Installation](src/installation.ts) | Per-target App tokens scoped by repository ID with exact permissions |
 | [Agent workflow](.github/workflows/sdlc-agent.md) | Fresh Copilot execution for each specialized role |
 | [Check workflow](.github/workflows/sdlc-checks.yml) | Deterministic security and testing jobs |
+| [Receipt workflow](.github/workflows/sdlc-intake-receipt.yml) | Credential-free event snapshot called by registered targets |
 
 Authoritative JSON state is stored on `sdlc-state`. Writes use the previous
 content SHA to reject conflicting updates. The controller is serialized;
 scheduled reconciliation recovers established lifecycles after events are
 coalesced by Actions concurrency or callbacks are missed. Initial intake still
-requires a live authorized label event. Jobs are persisted before dispatch and accepted only from the
+requires a live authorized label event, or for a registered target an
+authenticated receipt of one. Jobs are persisted before dispatch and accepted only from the
 configured App, trusted workflow revision, expected job, and exact source SHA.
+
+Registered target repositories can request work without holding any controller
+credential: a pinned, permission-free caller workflow records the label event,
+and the controller authenticates that receipt with a token scoped to the
+target's repository ID. Target worker execution is not implemented yet, so keep
+targets disabled. See [Registered Targets](docs/operations.md#registered-targets).
 
 State uses `schemaVersion: 2`. Valid version-1 records, with or without cost
 accounting, are upgraded automatically by the controller without resetting plans,

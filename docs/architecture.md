@@ -5,8 +5,10 @@ through baseline and dependency preflight, research, human plan approval, task e
 independent review, and final PR publication. The controller makes lifecycle
 decisions deterministically; agents propose plans, code, and assessments.
 
-The scope is one GitHub repository, Node.js/TypeScript, and sequential coding
-tasks. The diagrams describe implementation behavior, not proof of a successful
+The scope is one control repository, Node.js/TypeScript, and sequential coding
+tasks. Registered target repositories can submit authenticated intake receipts
+(see [Cross-Repository Intake](#cross-repository-intake)); worker execution against
+target source is not implemented yet. The diagrams describe implementation behavior, not proof of a successful
 live deployment. See [operations.md](operations.md) for activation, credentials,
 branch protection, and the first live pilot.
 
@@ -20,6 +22,7 @@ branch protection, and the first live pilot.
 - [Recovery Flow](#recovery-flow): pauses, repairs, retries, and cancellation.
 - [Component Relationships](#component-relationships): implementation ownership.
 - [State and Evidence](#state-and-evidence): durable records and publication rules.
+- [Cross-Repository Intake](#cross-repository-intake): authenticated receipts from registered targets.
 
 Solid arrows show control or data flow. Dotted arrows show credentials or
 supporting context. A gate's outgoing edge labels state the decision; agents
@@ -37,8 +40,13 @@ flowchart TD
         ArchIssue["Epic issue, label, and human comments"]
         ArchEvents["Issue events, completion events, schedule"]
     end
+    subgraph ArchTarget["Registered target repository"]
+        ArchTargetIssue["Target issue, label, and human comments"]
+        ArchReceipt["Credential-free receipt run and event snapshot"]
+    end
     subgraph ArchControl["Trusted sdlc-controller environment"]
         ArchApp["Scoped GitHub App installation token"]
+        ArchTargetToken["Per-target token scoped by repository ID"]
         ArchController["Deterministic controller on Actions"]
     end
     subgraph ArchExecution["Separate hosted worker jobs"]
@@ -59,6 +67,10 @@ flowchart TD
     ArchIssue --> ArchEvents
     ArchEvents -->|"Reconcile current state"| ArchController
     ArchApp -.->|"Repository-scoped write authority"| ArchController
+    ArchTargetIssue -->|"Pinned caller on labeled"| ArchReceipt
+    ArchTargetToken -.->|"Only while a target is enabled"| ArchController
+    ArchController -->|"Poll and authenticate receipts"| ArchReceipt
+    ArchController -->|"Recheck issue, commands, and progress"| ArchTargetIssue
     ArchController -->|"Read and checkpoint"| ArchState
     ArchController -->|"Create and link tasks"| ArchTasks
     ArchController -->|"Explicit agent workflow dispatch"| ArchBudget
@@ -128,8 +140,8 @@ remain necessary. The pipeline still targets Node.js/TypeScript.
 <!-- mermaid-checked: safe quoted labels, unique IDs, closed subgraphs -->
 ```mermaid
 flowchart TD
-    ProcIntake["Open issue carrying agentic-SDLC"]
-    ProcAuthorize["Labeled-event sender is a human repository writer"]
+    ProcIntake["Open issue carrying agentic-SDLC here or in a registered target"]
+    ProcAuthorize["Labeled-event or authenticated receipt sender is a human repository writer"]
     ProcIgnore["Ignore unauthorized intake"]
     ProcInitialize["Bind event request snapshot and default-branch revision"]
     ProcBaseline["preflighting: scan baseline before inference"]
@@ -867,8 +879,14 @@ These are modules within Actions jobs, not separately deployed services.
 flowchart LR
     subgraph ComponentControl["Controller process"]
         ComponentMain["main.ts"]
+        ComponentReconcile["reconcile.ts"]
         ComponentController["controller.ts"]
         ComponentGitHub["github.ts"]
+    end
+    subgraph ComponentIntake["Foreign target intake"]
+        ComponentTargets["targets.ts"]
+        ComponentReceipts["receipts.ts"]
+        ComponentInstallation["installation.ts"]
     end
     subgraph ComponentRules["Domain and validation rules"]
         ComponentDomain["domain.ts"]
@@ -882,9 +900,16 @@ flowchart LR
         ComponentWorker["worker.ts"]
         ComponentValidate["validate.ts"]
     end
-    ComponentMain -->|"Select issues and reconcile"| ComponentController
-    ComponentMain -->|"Construct Platform adapter"| ComponentGitHub
+    ComponentMain -->|"Load policy, registry, and credentials"| ComponentReconcile
     ComponentMain -->|"Resolve and validate runtime policy"| ComponentContracts
+    ComponentMain -->|"Load the target registry"| ComponentTargets
+    ComponentMain -->|"Mint per-target tokens"| ComponentInstallation
+    ComponentReconcile -->|"Select issues and targets, then reconcile"| ComponentController
+    ComponentReconcile -->|"Construct control or target-bound adapter"| ComponentGitHub
+    ComponentReconcile -->|"Authenticate new target receipts"| ComponentReceipts
+    ComponentReceipts -->|"Start intake through the normal tick"| ComponentController
+    ComponentReceipts -->|"Cursor, target API, and control revision"| ComponentGitHub
+    ComponentGitHub -->|"Target state paths and run titles"| ComponentTargets
     ComponentController -->|"Commands and plan approval"| ComponentDomain
     ComponentController -->|"Jobs, cost observations and publication prerequisites"| ComponentLifecycle
     ComponentController -->|"Platform operations"| ComponentGitHub
@@ -909,7 +934,11 @@ flowchart LR
 
 | Component | Layer | Type | Responsibility |
 | --- | --- | --- | --- |
-| [Entry](../src/main.ts) | Control | CLI | Select issues and reject stale runs |
+| [Entry](../src/main.ts) | Control | CLI | Load policy, registry, and credentials |
+| [Reconcile](../src/reconcile.ts) | Control | Router | Select issues and targets, isolate failures, reject stale runs |
+| [Targets](../src/targets.ts) | Control | Registry | Validate foreign targets and target-qualified run identity |
+| [Receipts](../src/receipts.ts) | Control | Intake | Authenticate target receipts and keep the scan cursor |
+| [Installation](../src/installation.ts) | Control | Credentials | Mint per-target tokens with exact permissions |
 | [Controller](../src/controller.ts) | Control | Orchestrator | Reconcile stages and pending costs |
 | [Domain](../src/domain.ts) | Domain | Rules | Parse commands and hash plans |
 | [Lifecycle](../src/lifecycle.ts) | Domain | Ledger | Jobs, tasks, evidence, cost observations |
@@ -1250,17 +1279,113 @@ a gate; being near the cap alone must not invalidate a completed review.
 | Controller timeout | 15 minutes |
 | Agent and threat-detection caps | Configured limit applied separately to each job |
 | Worker evidence artifact retention | 14 days requested |
+| Registered foreign targets | 100 |
+| Target receipt lookback | 24 hours; older receipts are never accepted |
+| Target receipts inspected per reconciliation | 50; the rest are deferred |
+| Remembered receipt runs per target | 1,000 within the scan window |
+| Receipt artifact retention and size | 3 days requested; 1,000,000 bytes |
 
 Limits come from [policy](../.github/sdlc/policy.json), the workflow sources,
+[receipts.ts](../src/receipts.ts), [targets.ts](../src/targets.ts),
 and the validated `SDLC_AIC_CREDIT_LIMIT` repository-variable override.
 State history and issue/PR summaries retain evidence links, not perpetual copies
 of expired artifacts. The usage ledger retains captured accounting fields, not
 raw prompts, responses, or token logs. Actions minutes and aggregate inference usage need
 separate billing controls.
 
+## Cross-Repository Intake
+
+A registered target repository holds no controller credentials. Its only SDLC
+file is `.github/workflows/sdlc-intake.yml`, rendered from
+[the caller template](../.github/sdlc/templates/sdlc-intake.yml). On an
+`issues: labeled` event for the intake label, that caller runs the
+[receipt workflow](../.github/workflows/sdlc-intake-receipt.yml) from this
+repository, pinned to a full commit SHA. The receipt job has no permissions and
+no secrets: it copies an allowlisted snapshot of the event (action, label,
+repository ID, issue number, title, body, author, and sender) into a short-lived
+`sdlc-intake` artifact. Comments in the target are never trusted on their own;
+the controller reads them later through a target-scoped token.
+
+The controller does not trust the artifact because it exists. A target writer can
+edit the caller, re-run a run, or upload artifacts from another workflow, so a
+receipt is accepted only when every check below holds:
+
+- The run belongs to the target's `sdlc-intake.yml`, is an `issues` event in the
+  registered repository ID, is first attempt, completed successfully, and was
+  created after the target's `activatedAt` and within the last 24 hours.
+- The run's actor equals its triggering actor, and its only referenced workflow is
+  the receipt workflow at the registered `receiptRef` from this control repository.
+- The caller file at the run's commit is byte-identical, after line-ending
+  normalization, to the template rendered with this repository, `receiptRef`, and
+  the policy label.
+- `receiptRef` is an ancestor of, or equal to, the control default branch. A
+  commit reachable only through a fork network cannot be registered as the pin.
+- Exactly one unexpired `sdlc-intake` artifact exists, within the size limit, and
+  its strict snapshot names this repository ID, a `labeled` action, the exact
+  policy label, and a `User` sender equal to the run actor.
+
+An accepted receipt is only an intake request. It passes through the same
+`tick` as a local label: the controller rereads the target issue, and starts a
+lifecycle only when the issue is open, still labeled, authored by the snapshot's
+requester, and the sender currently has write access to the target.
+
+<!-- mermaid-checked: quoted participant aliases, closed conditional blocks -->
+```mermaid
+sequenceDiagram
+  participant CriWriter as "Target writer"
+  participant CriTarget as "Target repository"
+  participant CriReceipt as "Receipt run without credentials"
+  participant CriControl as "Controller"
+  participant CriState as "State branch"
+
+  CriWriter->>CriTarget: Apply the intake label to an open issue
+  CriTarget-)CriReceipt: Rendered caller invokes the SHA-pinned callee
+  CriReceipt->>CriTarget: Upload the allowlisted event snapshot artifact
+  CriControl->>CriControl: Mint a token for this target ID only
+  CriControl->>CriState: Load the target receipt cursor
+  CriControl->>CriTarget: List intake runs in the scan window
+    loop Each new run, up to the inspection budget
+    CriControl->>CriControl: Screen event, path, repository, attempt, actor, and pinned callee
+      opt Screen passed
+      CriControl->>CriTarget: Compare the caller at the run commit with the rendered template
+      CriControl->>CriTarget: Download and validate the receipt artifact
+      end
+      opt Receipt authenticated
+      CriControl->>CriTarget: Recheck issue state, author, label, and writer access
+      CriControl->>CriState: Create the target lifecycle under targets/ID/issues
+      end
+    end
+  CriControl->>CriState: Record decided runs by compare-and-swap
+```
+
+The cursor at `targets/<repository-id>/intake.json` on the state branch records the
+scan window start and the run IDs already decided in it. A lifecycle is created
+before its run is recorded, so an interruption repeats an idempotent tick instead
+of losing intake. Rejected runs are recorded and never revisited. Incomplete runs,
+receipts whose artifact is not visible yet, inspection-budget overflow, and failed
+ticks hold the window open for the next reconciliation. A run that never yields
+an artifact is rejected 15 minutes after it last updated.
+
+Receipts are polled whenever the controller reconciles without a selected issue:
+the 10-minute schedule and manual runs that leave the issue empty. Target events
+do not reach this repository, so comment commands on target issues are read on
+the same cadence. A controller outage longer than the 24-hour lookback
+drops unscanned receipts; reapply the label after recovery. The runs listing
+returns at most 1,000 runs per window, so a burst larger than that can be missed.
+
+For each enabled target, the controller signs an App JWT with the private key,
+finds the App installation on that repository, and requests an installation token
+restricted to the target's repository ID with Actions read and Checks, Contents,
+Issues, and Pull requests write. The token is refused unless GitHub returns
+exactly that repository and those permissions, plus Metadata. Administration is
+never requested. One target's failure is logged and does not stop the others.
+
 ## Trust Boundaries and Scope
 
 The controller's App key belongs only to the `sdlc-controller` environment.
+While any registered target is enabled, the controller's Node step also receives
+the key to mint per-target installation tokens; otherwise only the pinned token
+action reads it. No receipt, target, or worker workflow receives it.
 Agent inference credentials belong to `sdlc-agent`; they do not grant the
 controller's repository publishing authority. The CodeQL job has scoped
 `security-events: write`, but no controller App token and no candidate build.
@@ -1284,7 +1409,11 @@ mutation. Plan and evidence Markdown is treated as untrusted and issue-closing
 keywords are neutralized before the controller builds the final PR.
 
 The current prototype does not implement parallel coding integration, automatic
-rebasing, cross-repository changes, deployment, automatic merging, or a Projects
-dashboard. The public-preview agent runtime and all live permissions still
+rebasing, worker execution or publication against a registered target's source,
+deployment, automatic merging, or a Projects dashboard. Worker workflows do not
+yet accept target inputs, so a dispatch for a target lifecycle is rejected by
+GitHub; keep targets disabled until that support lands. Receipt artifacts are
+readable by anyone who can read the target's Actions runs, and the receipt
+workflow must be accessible to each target. The public-preview agent runtime and all live permissions still
 need a bounded pilot. Local fixtures and tests validate controller behavior;
 they cannot guarantee model correctness or prove service-side configuration.

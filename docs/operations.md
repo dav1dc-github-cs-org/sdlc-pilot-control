@@ -245,6 +245,8 @@ done
 Store `SDLC_APP_PRIVATE_KEY` as an environment secret. Only the trusted
 controller references this environment. Do not also store this key as a
 repository-wide secret: candidate workflows must not be able to request it.
+The controller's Node step receives the key only while a
+[registered target](#registered-targets) is enabled.
 
 ### sdlc-agent
 
@@ -504,6 +506,70 @@ Also test pausing an in-flight job and a deliberately failing test on a disposab
 pilot. Do not treat local mocks as evidence that live credentials, billing,
 network policies, CodeQL licensing, or Copilot behavior work in your organization.
 
+## Registered Targets
+
+This repository can act as a control plane for other repositories. A registered
+target receives only a secret-free caller workflow; state, workers, and the App
+key stay here. Target worker execution is not implemented yet: worker workflows
+reject target inputs, so keep every registry entry `"enabled": false` until that
+support lands. See [Cross-Repository Intake](architecture.md#cross-repository-intake)
+for the receipt checks.
+
+The intake pieces are:
+
+| Piece | Location | Purpose |
+| --- | --- | --- |
+| Registry | [`.github/sdlc/targets.json`](../.github/sdlc/targets.json) | Target ID, name, enabled flag, activation time, receipt pin |
+| Receipt workflow | [`.github/workflows/sdlc-intake-receipt.yml`](../.github/workflows/sdlc-intake-receipt.yml) | Callee that snapshots the label event into an artifact |
+| Caller template | [`.github/sdlc/templates/sdlc-intake.yml`](../.github/sdlc/templates/sdlc-intake.yml) | Rendered into the target as `.github/workflows/sdlc-intake.yml` |
+| Cursor | `targets/<id>/intake.json` on `sdlc-state` | Scan window and decided receipt runs |
+
+A registry entry has this shape:
+
+```json
+{
+  "id": 123456789,
+  "repository": "octo-org/app",
+  "enabled": false,
+  "activatedAt": "2026-09-01T00:00:00Z",
+  "intake": {
+    "workflow": ".github/workflows/sdlc-intake.yml",
+    "receiptRef": "<40-character commit SHA on this repository's default branch>"
+  }
+}
+```
+
+Use the numeric repository ID, not only the name, so a renamed or recreated
+repository cannot inherit the registration. `activatedAt` excludes earlier runs.
+`receiptRef` must be a commit on this repository's default branch that contains
+the receipt workflow; the controller refuses receipts when it is not.
+
+Render the caller by replacing `__CONTROL_REPOSITORY__` with this repository's
+`owner/name`, `__RECEIPT_REF__` with `receiptRef`, and `__LABEL__` with the policy
+label. Commit the result unchanged to the target's default branch: any edit,
+including whitespace other than line endings, makes every receipt fail
+authentication. Changing `receiptRef` requires re-rendering the caller in the
+same change window.
+
+Install the controller App on each target, with the same App permissions listed
+in [Create a Controller App](#1-create-a-controller-app). The controller requests
+only Actions read and Checks, Contents, Issues, and Pull requests write for a
+target, scoped to its repository ID, and refuses a token that differs. While any
+target is enabled, the controller's Node step receives `SDLC_APP_PRIVATE_KEY` to
+mint those tokens; with no enabled target, it does not.
+
+If this repository is private or internal, allow target repositories to use its
+workflows under **Settings > Actions > General > Access**. Receipt artifacts
+contain the issue title and body and are visible to anyone who can read the
+target's Actions runs.
+
+Run the controller manually with the `target` input set to a repository ID to
+scan that target immediately, optionally with `issue` for one target issue.
+Receipts and target comment commands are otherwise read every 10 minutes.
+Receipts older than 24 hours are not accepted: after a longer controller outage,
+remove and reapply the label. Disabling a target freezes its lifecycles in place;
+re-enabling it resumes them.
+
 ## Coding and Repair Evidence
 
 The [Coding profile](../.github/agents/code.agent.md) maps each assigned criterion
@@ -732,7 +798,8 @@ restoring old state can lose accepted work and cost receipts.
 
 Controller runs are serialized. Actions may coalesce pending events; every
 10 minutes the schedule rereads durable state and issue commands. It can also
-be run manually from the Actions tab, optionally for one issue.
+be run manually from the Actions tab, optionally for one issue, one
+[registered target](#registered-targets), or one issue in a registered target.
 
 - A lost dispatch is rediscovered by job identity, actor, and workflow revision,
   then retried within policy if no run appears.
