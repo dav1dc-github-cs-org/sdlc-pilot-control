@@ -942,7 +942,10 @@ flowchart LR
 | Feature PR | Published integrated feature, awaiting normal human review |
 
 State is stored as `issues/<number>.json` on the protected `sdlc-state` branch.
-That branch is initialized with an isolated root commit, separate from feature
+A lifecycle for a registered foreign target is stored as
+`targets/<repository-id>/issues/<number>.json` and records its target binding; the
+adapter rejects a record loaded from, saved to, or dispatched under another target's
+path. That branch is initialized with an isolated root commit, separate from feature
 history. The default feature branch pattern is `agentic/epic-<number>-v<version>`;
 the branch is created lazily when an accepted text change or an approved
 amendment integration is published.
@@ -1031,6 +1034,21 @@ differs. A protected-path difference means the trusted harness itself moved, so
 the lifecycle stops for a full revision or a maintainer-requested scoped amendment.
 Anything the comparison cannot judge cleanly, such as a revert, a force push, or
 a diff at the API's file cap, is treated as a protected-path change.
+
+Intake-only control files are the exception: the target registry
+(`.github/sdlc/targets.json`), the receipt workflow
+(`.github/workflows/sdlc-intake-receipt.yml`), and the caller templates under
+`.github/sdlc/templates/` govern how new requests are received, not how a running
+lifecycle executes. A change limited to them does not stop running lifecycles,
+except that a registry change which alters a foreign target's own ID, repository,
+or enabled flag stops that target's lifecycles. Any other protected path in the
+same comparison still stops them.
+
+For a foreign target, `baseSha`, `headSha`, the base branch, and an amendment's
+`targetSha` describe the target repository, while `controlSha` is always a
+control-repository revision. Trusted-path comparisons use only control revisions,
+and target default-branch movement is handled as baseline drift by approval,
+amendment, and maintenance checks.
 
 Trusted-revision detection uses `isProtectedPath`: the protected patterns in
 [policy.json](../.github/sdlc/policy.json) plus the hardcoded automation and

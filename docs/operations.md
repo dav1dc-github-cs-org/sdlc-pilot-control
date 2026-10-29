@@ -755,7 +755,9 @@ be run manually from the Actions tab, optionally for one issue.
   the new plan. A trusted-baseline amendment requires a maintainer. Movement outside
   protected paths is adopted as the trusted workflow revision between jobs;
   it does not automatically rebase the candidate branch. Earlier branches remain
-  available for inspection.
+  available for inspection. Changes limited to the target registry, the receipt
+  workflow, or intake templates do not stop running lifecycles unless they change
+  that lifecycle's own target binding.
 - Cancellation saves any unsettled accounting identity while invalidating
   in-flight results, before requesting cancellation of the worker run. A late
   receipt can update costs; a late result cannot restart the lifecycle.

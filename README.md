@@ -230,6 +230,7 @@ compiler upgrades require deliberate review and validation.
 | [Worker](src/worker.ts) | Validate registered jobs and package bounded proposals |
 | [Validation](src/validate.ts) | Actual tests, coverage comparison, scanner-result enforcement |
 | [Policy](.github/sdlc/policy.json) | File restrictions, test discovery, thresholds, and execution budgets |
+| [Targets](src/targets.ts) | Foreign target registry, binding checks, and target-qualified run identity |
 | [Agent workflow](.github/workflows/sdlc-agent.md) | Fresh Copilot execution for each specialized role |
 | [Check workflow](.github/workflows/sdlc-checks.yml) | Deterministic security and testing jobs |
 
