@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import test from 'node:test';
+import { basename, join, resolve } from 'node:path';
+import test, { beforeEach } from 'node:test';
 import { renderIntakeWorkflow } from '../src/receipts.ts';
 import { intakeTemplate, parseRegistry, registryPath, type Registry } from '../src/targets.ts';
 
@@ -27,6 +27,11 @@ const branch = `sdlc/intake-${head.slice(0, 12)}`;
 const caller = renderIntakeWorkflow(template, control, head, label);
 const callerPath = `repos/${target}/contents/.github/workflows/sdlc-intake.yml`;
 const encodedHead = encodeURIComponent(`ctl-org:${branch}`);
+
+// Set SDLC_SCRIPT_TRANSCRIPTS to a file path to record each script run as Markdown review evidence.
+const transcripts = process.env.SDLC_SCRIPT_TRANSCRIPTS;
+let currentTest = '';
+beforeEach(t => { currentTest = t.name; });
 
 const fakeGh = `#!${process.execPath}
 const fs = require('node:fs');
@@ -147,10 +152,15 @@ function run(script: string, args: string[], routeTable: Routes, initial: Regist
     const calls = readFileSync(join(root, 'log'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Call);
     const after = readFileSync(registryFile, 'utf8');
     assert.deepEqual(readdirSync(work), [], 'the scripts must remove their working directory');
-    return {
-      status: result.status, stdout: result.stdout, stderr: result.stderr, calls, before, after,
-      writes: calls.filter(call => call.method !== 'GET'),
-    };
+    const writes = calls.filter(call => call.method !== 'GET');
+    if (transcripts) {
+      const writeList = writes.map(call => `- \`${call.method} ${call.path}\``).join('\n') || '- None';
+      const output = `${result.stdout}${result.stderr}`.replaceAll(root, '<tmp>');
+      appendFileSync(transcripts, `## ${currentTest}\n\n\`\`\`console\n$ ${basename(script)} ${args.join(' ')}\n`
+        + `${output}\`\`\`\n\nExit status ${result.status}. GitHub writes:\n\n${writeList}\n\n`
+        + `Registry ${after === before ? 'unchanged' : 'changed'}.\n\n`);
+    }
+    return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls, before, after, writes };
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

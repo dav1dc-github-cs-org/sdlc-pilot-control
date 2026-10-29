@@ -31,6 +31,13 @@ With `--apply`, it first runs the same checks as a plan; if any check fails it
 changes nothing. Re-running it is safe: it reuses its branch and pull request
 and skips changes already made.
 
+To preview the output without contacting GitHub, record the test suite's runs
+against its fake `gh`:
+
+```sh
+SDLC_SCRIPT_TRANSCRIPTS=/tmp/sdlc-transcripts.md node --test test/target-scripts.test.ts
+```
+
 With `--apply` it can:
 
 - set the Actions access level of this repository so the target may call its
