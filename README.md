@@ -83,6 +83,8 @@ are unchanged. Both paths invalidate old gate evidence and retain cost history.
 4. Set `SDLC_ENABLED` to `true` only after setup is complete.
 5. Create a small issue with clear acceptance criteria, then have a repository
   writer apply the `agentic-SDLC` label.
+6. Optionally, serve other repositories from this control plane by following
+  [Target Repository Setup](docs/target-setup.md).
 
 To select the inference model for all SDLC agents, set the repository Actions
 variable `SDLC_MODEL` to a supported Copilot model ID. Unset or empty values
@@ -239,6 +241,7 @@ compiler upgrades require deliberate review and validation.
 | [Check workflow](.github/workflows/sdlc-checks.yml) | Deterministic security and testing jobs |
 | [Receipt workflow](.github/workflows/sdlc-intake-receipt.yml) | Credential-free event snapshot called by registered targets |
 | [Source workflow](.github/workflows/sdlc-source.yml) | Reader-zone fetch of a target's registered commits for agent and check jobs |
+| [Target scripts](scripts/sdlc-target-setup.sh) | Operator-run checks and dry-run-by-default setup, verification, enabling, and disabling of a target |
 
 Authoritative JSON state is stored on `sdlc-state`. Writes use the previous
 content SHA to reject conflicting updates. The controller is serialized;
@@ -257,8 +260,10 @@ target's registered commits without executing them, and hands agent and check
 jobs a digest-bound Git bundle that they restore offline. Neither App credential
 reaches candidate code. The controller publishes the feature branch, final PR,
 and completion check in the target. Anyone who can read this repository can read
-mirrored target content, so register only targets in the same trust domain. See
-[Registered Targets](docs/operations.md#registered-targets). Targets have not yet
+mirrored target content, so register only targets in the same trust domain; a
+target must also have exactly this repository's visibility. See
+[Registered Targets](docs/operations.md#registered-targets), and register a target
+with the scripts in [Target Repository Setup](docs/target-setup.md). Targets have not yet
 completed a live pilot.
 
 State uses `schemaVersion: 2`. Valid version-1 records, with or without cost

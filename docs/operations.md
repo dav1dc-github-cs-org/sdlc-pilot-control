@@ -32,12 +32,13 @@ plan and fresh approval under the normal trusted-revision rules.
 
 ## 1. Create a Controller App
 
-Create a GitHub App with webhooks disabled and install it only on this
-repository. No separately hosted App server is required. Register the App under
-the same account that owns the repository: a private App can only be installed on
-its owner's account, so transferring either the App or the repository later
-uninstalls it and every controller run then fails to mint a token. Give it these
-repository permissions:
+Create a GitHub App with webhooks disabled and install it on this repository
+alone until you register a [target](#registered-targets). No separately hosted
+App server is required. Register the App under the same account that owns the
+repository: a private App can only be installed on its owner's account, so
+transferring either the App or the repository later uninstalls it and every
+controller run then fails to mint a token. A target owned by a different account
+needs the App made public. Give it these repository permissions:
 
 | Permission | Access | Purpose |
 | --- | --- | --- |
@@ -534,6 +535,12 @@ Targets have not yet completed a live pilot. Register one disposable target
 first and run the [bounded pilot](#5-run-a-bounded-pilot) against it; local tests
 cannot prove the live Apps, artifact handoff, or target permissions.
 
+Follow [Target Repository Setup](target-setup.md) to register a target. Its
+[setup](../scripts/sdlc-target-setup.sh) and
+[verify](../scripts/sdlc-target-verify.sh) scripts check every requirement in
+this section, render the caller, open the target pull request, and edit the
+registry; they dry-run unless given `--apply`.
+
 The intake pieces are:
 
 | Piece | Location | Purpose |
@@ -571,23 +578,31 @@ authentication. Changing `receiptRef` requires re-rendering the caller in the
 same change window.
 
 Install the controller App on each target, with the same App permissions listed
-in [Create a Controller App](#1-create-a-controller-app). The controller requests
-only Actions read and Checks, Contents, Issues, and Pull requests write for a
-target, scoped to its repository ID, and refuses a token that differs. While any
-target is enabled, the controller's Node step receives `SDLC_APP_PRIVATE_KEY` to
-mint those tokens; with no enabled target, it does not.
+in [Create a Controller App](#1-create-a-controller-app). A target owned by a
+different account needs the App made public, because a private App installs only
+on its owner's account. The controller requests only Actions read and Checks,
+Contents, Issues, and Pull requests write for a target, scoped to its repository
+ID, and refuses a token that differs. While any target is enabled, the
+controller's Node step receives `SDLC_APP_PRIVATE_KEY` to mint those tokens;
+with no enabled target, it does not.
 
-If this repository is private or internal, allow target repositories to use its
-workflows under **Settings > Actions > General > Access**. Receipt artifacts
-contain the issue title and body and are visible to anyone who can read the
-target's Actions runs.
+A target must have the same visibility as this repository; see
+[Exposure and Trust Domains](#exposure-and-trust-domains). If this repository is
+private or internal, raise its access level under **Settings > Actions >
+General > Access** so the target can call the receipt workflow: `organization`
+for targets in the same organization, `enterprise` for other organizations in
+the same enterprise, or `user` for a user-owned private repository's other
+private repositories. The target's own Actions policy must allow GitHub-authored
+actions. Receipt artifacts contain the issue title and body and are visible to
+anyone who can read the target's Actions runs.
 
 ### Reader App
 
 Workers never use the controller App to read target source. Create a second
 GitHub App with webhooks disabled and one repository permission, Contents read;
 Metadata read is added automatically. Install it under **Only select
-repositories** on target repositories alone; it needs no installation here.
+repositories** on target repositories alone; it needs no installation here. Like
+the controller App, it must be public to install on another account's targets.
 Store its private key and numeric App ID in the [`sdlc-reader`](#sdlc-reader)
 environment, never as repository secrets or variables.
 
@@ -628,14 +643,21 @@ Anyone who can read this repository can read what the pipeline mirrors from a
 target: issue text and plans in state, worker logs, source bundles, and other
 Actions artifacts. Before each source fetch and each reconciliation, the
 controller refuses a target whose repository ID or name no longer matches the
-registry, or whose visibility is wider than this repository's, ranked private,
+registry, or that is less visible than this repository, ranked private,
 internal, then public.
 
 That check is necessary but not sufficient: two private repositories can have
 different readers. Register a target only after confirming that everyone who
 can read this repository may read the target, and use a separate control plane
-for a target with a narrower audience. This prototype repository is public, so
-the guard refuses every private or internal target here.
+for a target with a narrower audience.
+
+GitHub adds the opposite constraint: a repository can call a reusable workflow
+in a private or internal repository only when the caller is no more visible
+than the callee. A public target cannot call this repository's receipt workflow
+if this repository is private or internal, and an internal target cannot if it
+is private. Together the two rules mean a target must have exactly this
+repository's visibility. This prototype repository is public, so it can serve
+only public targets.
 
 ### Target CI
 

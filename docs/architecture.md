@@ -1442,7 +1442,7 @@ sequenceDiagram
   TeControl-)TeSource: Dispatch the worker workflow with the target ID, owner, and name
   TeSource->>TeSource: Mint a Contents-read Reader token for this target only
   TeSource->>TeTarget: Recheck repository ID, name, and visibility
-    alt Identity drifted or visibility is wider than this repository
+    alt Identity drifted or target less visible than this repository
     TeSource->>TeSource: Fail the job before reading any content
     else Target verified
       alt Integrate stage
@@ -1499,9 +1499,11 @@ Candidate tests run in separate jobs without either App credential.
 
 Anyone who can read this repository can read target content mirrored here,
 including issue text, plans, logs, bundles, and other artifacts. The controller
-refuses a target whose identity drifted or whose visibility is wider than this
-repository's. Visibility does not prove that the two audiences match, so each
-target needs an access review per trust domain; see
+refuses a target whose identity drifted or that is less visible than this
+repository, and GitHub lets a target call the receipt workflow only when the
+target is no more visible, so the two visibilities must match. Visibility does
+not prove that the two audiences match, so each target needs an access review
+per trust domain; see
 [Exposure and Trust Domains](operations.md#exposure-and-trust-domains). Target
 CI can run controller-published branches with the target's own credentials; see
 [Target CI](operations.md#target-ci).
