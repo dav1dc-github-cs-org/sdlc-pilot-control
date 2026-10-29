@@ -6,9 +6,10 @@ independent review, and final PR publication. The controller makes lifecycle
 decisions deterministically; agents propose plans, code, and assessments.
 
 The scope is one control repository, Node.js/TypeScript, and sequential coding
-tasks. Registered target repositories can submit authenticated intake receipts
-(see [Cross-Repository Intake](#cross-repository-intake)); worker execution against
-target source is not implemented yet. The diagrams describe implementation behavior, not proof of a successful
+tasks. The control repository can also serve registered target repositories: it
+authenticates their intake receipts, runs workers against their source, and
+publishes their PRs (see [Cross-Repository Intake](#cross-repository-intake)).
+The diagrams describe implementation behavior, not proof of a successful
 live deployment. See [operations.md](operations.md) for activation, credentials,
 branch protection, and the first live pilot.
 
@@ -22,7 +23,7 @@ branch protection, and the first live pilot.
 - [Recovery Flow](#recovery-flow): pauses, repairs, retries, and cancellation.
 - [Component Relationships](#component-relationships): implementation ownership.
 - [State and Evidence](#state-and-evidence): durable records and publication rules.
-- [Cross-Repository Intake](#cross-repository-intake): authenticated receipts from registered targets.
+- [Cross-Repository Intake](#cross-repository-intake): receipts, source handoff, and publication for registered targets.
 
 Solid arrows show control or data flow. Dotted arrows show credentials or
 supporting context. A gate's outgoing edge labels state the decision; agents
@@ -43,11 +44,16 @@ flowchart TD
     subgraph ArchTarget["Registered target repository"]
         ArchTargetIssue["Target issue, label, and human comments"]
         ArchReceipt["Credential-free receipt run and event snapshot"]
+        ArchTargetCode[("Target default branch, feature branch, final PR, and check")]
     end
     subgraph ArchControl["Trusted sdlc-controller environment"]
         ArchApp["Scoped GitHub App installation token"]
         ArchTargetToken["Per-target token scoped by repository ID"]
         ArchController["Deterministic controller on Actions"]
+    end
+    subgraph ArchReaderZone["Trusted sdlc-reader environment"]
+        ArchReaderToken["Reader App token for one target, Contents read only"]
+        ArchSource["Source job: fetch and bundle without executing"]
     end
     subgraph ArchExecution["Separate hosted worker jobs"]
       ArchBudget["Validate and snapshot repository AI credit limit"]
@@ -71,6 +77,12 @@ flowchart TD
     ArchTargetToken -.->|"Only while a target is enabled"| ArchController
     ArchController -->|"Poll and authenticate receipts"| ArchReceipt
     ArchController -->|"Recheck issue, commands, and progress"| ArchTargetIssue
+    ArchController -->|"Target jobs run a source job first"| ArchSource
+    ArchReaderToken -.->|"Read-only target access"| ArchSource
+    ArchSource -->|"Fetch registered commits"| ArchTargetCode
+    ArchSource -->|"Digest-bound bundle restored offline"| ArchAgent
+    ArchSource -->|"Digest-bound bundle restored offline"| ArchChecks
+    ArchController -->|"Publish accepted target work with the per-target token"| ArchTargetCode
     ArchController -->|"Read and checkpoint"| ArchState
     ArchController -->|"Create and link tasks"| ArchTasks
     ArchController -->|"Explicit agent workflow dispatch"| ArchBudget
@@ -265,6 +277,8 @@ Important details behind the diagram:
 
 Approval is an issue-comment protocol, not a model-generated decision and not
 a runner waiting for keyboard input. Each event starts a short controller run.
+For a registered target, the comments are on the target issue and are read on
+the 10-minute poll instead, because target events do not reach this repository.
 
 <!-- mermaid-checked: quoted participant aliases, closed conditional blocks -->
 ```mermaid
@@ -415,7 +429,15 @@ sequenceDiagram
     opt Agent workflow
     HwActions->>HwActions: Validate and snapshot SDLC_AIC_CREDIT_LIMIT after activation
     end
+    opt Registered target job
+    HwActions->>HwActions: Reader-zone source job checks target identity and exposure
+    HwActions->>HwArtifacts: Upload a bound manifest and bundle, or emit the integrate tree hash
+    end
   HwActions-)HwWorker: Start expected workflow revision
+    opt Registered target job with a bundle
+    HwWorker->>HwArtifacts: Download the source bundle and manifest
+    HwWorker->>HwWorker: Verify job binding and digest, then restore commits offline
+    end
   HwWorker->>HwState: Read registered lifecycle using read-only access
   HwState-->>HwWorker: Registered job, proposed or approved plan, tasks and evidence
   HwWorker->>HwWorker: Validate and migrate state in memory only
@@ -565,6 +587,7 @@ measured by executing tests, not by accepting a model's estimated percentage.
 <!-- mermaid-checked: safe quoted labels, unique IDs, closed subgraphs -->
 ```mermaid
 flowchart TD
+    GateSource["Target jobs only: Reader-zone source job binds registered commits"]
     GatePrepare["Validate dispatch and registered lifecycle"]
     GateStage["Select registered deterministic stage"]
     GateDependencies["Hash-check installed pins or stage declared preflight bytes"]
@@ -581,11 +604,13 @@ flowchart TD
         GateCoverage["Compare measured coverage to fixed policy"]
     end
     GateResult["Separate result job checks required job conclusions"]
-    GateIntegration["Read exact three-way trees and approved conflict resolutions"]
+    GateIntegration["This repository: read exact three-way trees and approved conflict resolutions"]
     GatePass["Return pass report"]
     GateFail["Return structured blocker with failed jobs and CodeQL diagnostics"]
     GateController["Controller authenticates result and chooses next phase"]
 
+    GateSource -->|"Manifest and bundle, restored offline in each job"| GatePrepare
+    GateSource -->|"Target integrate: tree hash or conflict blocker"| GateResult
     GatePrepare --> GateStage
     GateStage -->|"scan including preflight"| GateDependencies
     GateDependencies --> GateCodeQL --> GateSarif
@@ -598,7 +623,7 @@ flowchart TD
     GateBaseline --> GateCandidate --> GateCoverage --> GateResult
     GateBaseline -->|"Failure"| GateResult
     GateCandidate -->|"Failure"| GateResult
-    GateStage -->|"integrate"| GateIntegration --> GateResult
+    GateStage -->|"integrate for this repository"| GateIntegration --> GateResult
     GateResult -->|"Required jobs and stage-specific receipt are valid"| GatePass
     GateResult -->|"Required job or stage-specific receipt is not valid"| GateFail
     GatePass --> GateController
@@ -609,6 +634,10 @@ flowchart TD
 `prepare` and `tests`. `integrate` requires `prepare`, `integration`, and a valid
 tree-hash receipt; unrelated jobs are intentionally not required.
 If preparation fails, the result job cannot produce an accepted report.
+For a registered target, every stage also requires `source`. A target's
+`integrate` tree hash comes only from `source`, which holds the read access
+needed to compare target trees; the `integration` job does not run, and its
+output cannot vouch for a target.
 
 Preflight is a registered `scan` with a separate purpose and probe SHA, not a
 final candidate gate. Baseline scans precede research; declared dependency bytes
@@ -898,6 +927,7 @@ flowchart LR
     end
     subgraph ComponentExecution["Worker processes"]
         ComponentWorker["worker.ts"]
+        ComponentSource["source.ts"]
         ComponentValidate["validate.ts"]
     end
     ComponentMain -->|"Load policy, registry, and credentials"| ComponentReconcile
@@ -905,11 +935,11 @@ flowchart LR
     ComponentMain -->|"Load the target registry"| ComponentTargets
     ComponentMain -->|"Mint per-target tokens"| ComponentInstallation
     ComponentReconcile -->|"Select issues and targets, then reconcile"| ComponentController
-    ComponentReconcile -->|"Construct control or target-bound adapter"| ComponentGitHub
+    ComponentReconcile -->|"Construct a control or target-bound adapter and verify the target"| ComponentGitHub
     ComponentReconcile -->|"Authenticate new target receipts"| ComponentReceipts
     ComponentReceipts -->|"Start intake through the normal tick"| ComponentController
     ComponentReceipts -->|"Cursor, target API, and control revision"| ComponentGitHub
-    ComponentGitHub -->|"Target state paths and run titles"| ComponentTargets
+    ComponentGitHub -->|"Target state paths, run titles, and exposure rank"| ComponentTargets
     ComponentController -->|"Commands and plan approval"| ComponentDomain
     ComponentController -->|"Jobs, cost observations and publication prerequisites"| ComponentLifecycle
     ComponentController -->|"Platform operations"| ComponentGitHub
@@ -927,6 +957,8 @@ flowchart LR
     ComponentWorker -->|"Collect bounded text changes"| ComponentChanges
     ComponentWorker -->|"Shared permission and draft-path checks"| ComponentChanges
     ComponentWorker -->|"Isolated pinned artifact preflight"| ComponentDependencies
+    ComponentWorker -->|"Fetch, bundle, verify, and restore target source"| ComponentSource
+    ComponentSource -->|"Resolve the registered target"| ComponentTargets
     ComponentValidate -->|"Read trusted policy"| ComponentContracts
 ```
 
@@ -947,7 +979,8 @@ flowchart LR
 | [Recovery](../src/recovery.ts) | Domain | Rules | Bound remedies, proposals, amendments and task steps |
 | [Dependencies](../src/dependencies.ts) | Validation | Provenance | Stage pinned public npm files and enforce exact patch authority |
 | [GitHub](../src/github.ts) | Effects | Adapter | State and repository writes |
-| [Worker](../src/worker.ts) | Execution | CLI | Prepare and package results |
+| [Worker](../src/worker.ts) | Execution | CLI | Prepare, fetch target source, and package results |
+| [Source](../src/source.ts) | Execution | Transport | Bundle target commits without executing them and restore them offline |
 | [Validator](../src/validate.ts) | Execution | CLI | Run tests and enforce gates |
 
 ## State and Evidence
@@ -1077,7 +1110,11 @@ For a foreign target, `baseSha`, `headSha`, the base branch, and an amendment's
 `targetSha` describe the target repository, while `controlSha` is always a
 control-repository revision. Trusted-path comparisons use only control revisions,
 and target default-branch movement is handled as baseline drift by approval,
-amendment, and maintenance checks.
+amendment, and maintenance checks. A target job's source manifest binds the
+target repository ID and name, issue, job, `controlSha`, the `source`, `base`,
+and `scan` commits, the bundle digest, and the baseline test paths. Each consumer
+rejects a manifest that differs from its own registered job, so a bundle cannot
+be replayed into another job or target.
 
 Trusted-revision detection uses `isProtectedPath`: the protected patterns in
 [policy.json](../.github/sdlc/policy.json) plus the hardcoded automation and
@@ -1284,9 +1321,11 @@ a gate; being near the cap alone must not invalidate a completed review.
 | Target receipts inspected per reconciliation | 50; the rest are deferred |
 | Remembered receipt runs per target | 1,000 within the scan window |
 | Receipt artifact retention and size | 3 days requested; 1,000,000 bytes |
+| Target source bundle | 256 MiB, with full history of the registered commits |
+| Source job timeout and source artifact retention | 10 minutes; 1 day requested |
 
 Limits come from [policy](../.github/sdlc/policy.json), the workflow sources,
-[receipts.ts](../src/receipts.ts), [targets.ts](../src/targets.ts),
+[receipts.ts](../src/receipts.ts), [targets.ts](../src/targets.ts), [source.ts](../src/source.ts),
 and the validated `SDLC_AIC_CREDIT_LIMIT` repository-variable override.
 State history and issue/PR summaries retain evidence links, not perpetual copies
 of expired artifacts. The usage ledger retains captured accounting fields, not
@@ -1380,16 +1419,92 @@ Issues, and Pull requests write. The token is refused unless GitHub returns
 exactly that repository and those permissions, plus Metadata. Administration is
 never requested. One target's failure is logged and does not stop the others.
 
+### Target Execution
+
+A target lifecycle uses the same stages, workers, and acceptance rules as a local
+one. Only source handoff and publication scope differ. The controller dispatches
+the agent and check workflows here with the target's repository ID, owner, and
+name. Each first calls the [source workflow](../.github/workflows/sdlc-source.yml),
+whose single job runs in the `sdlc-reader` environment with `contents: read` on
+this repository. It runs only from the default branch, as the controller App,
+at the dispatched control revision, and only for target jobs. Its pinned token
+action mints a Reader App token for that one target with Contents read.
+
+<!-- mermaid-checked: quoted participant aliases, closed conditional blocks -->
+```mermaid
+sequenceDiagram
+  participant TeControl as "Controller"
+  participant TeSource as "Source job in sdlc-reader"
+  participant TeTarget as "Target repository"
+  participant TeArtifacts as "Actions artifacts"
+  participant TeWorker as "Agent, check, or result job without App credentials"
+
+  TeControl-)TeSource: Dispatch the worker workflow with the target ID, owner, and name
+  TeSource->>TeSource: Mint a Contents-read Reader token for this target only
+  TeSource->>TeTarget: Recheck repository ID, name, and visibility
+    alt Identity drifted or visibility is wider than this repository
+    TeSource->>TeSource: Fail the job before reading any content
+    else Target verified
+      alt Integrate stage
+      TeSource->>TeTarget: Read the approved three-way trees through the API
+      TeSource-->>TeWorker: Tree hash or conflict blocker for the result job
+      else Other stages
+      TeSource->>TeTarget: Fetch the registered commits into a bare repository
+      TeSource->>TeArtifacts: Upload the bundle and its bound manifest
+      TeWorker->>TeArtifacts: Download the bundle and manifest
+      TeWorker->>TeWorker: Verify binding and digest, restore offline, run the stage
+      end
+    TeWorker->>TeArtifacts: Upload the result and evidence
+    end
+  TeControl->>TeArtifacts: Authenticate the run and accept the result
+  TeControl->>TeTarget: Publish accepted commits, final PR, and check with the per-target token
+```
+
+The source job installs this repository's dependencies with lifecycle scripts
+disabled and runs only the worker's `source` operation. Git runs with no global
+or system configuration, hooks, submodules, LFS smudging, or credential helper;
+the token travels as a per-URL header in the environment, never in arguments.
+Objects are checked during the fetch, and nothing is checked out. A repository
+over the 256 MiB limit fails instead of falling back to a shallow history.
+
+Consumers verify the manifest against their own registered job and the bundle
+against its size and SHA-256 digest, then restore the commit they need into
+`source/` or `baseline/`. The restored repository's `origin` is the local bundle.
+gh-aw always checks out `source/` for the agent job, so a target agent run checks
+out the control revision first and the restore replaces it before preparation.
+gh-aw's credential setup then re-points `origin` at this repository, so a
+pre-agent step restores the bundle URL before the agent starts.
+
+Accepted results are published exactly as for a local issue, but through the
+per-target installation token: feature commits, the final PR, the advisory
+review, and `SDLC / Complete` land in the target, while state stays here under
+`targets/<repository-id>/`. A failed or refused source job fails its workflow,
+which counts under the normal [Recovery Flow](#recovery-flow). Reconciliation
+also skips a target that fails the identity or exposure check, before reading
+its receipts, issues, or state.
+
 ## Trust Boundaries and Scope
 
 The controller's App key belongs only to the `sdlc-controller` environment.
 While any registered target is enabled, the controller's Node step also receives
 the key to mint per-target installation tokens; otherwise only the pinned token
-action reads it. No receipt, target, or worker workflow receives it.
+action reads it. No receipt, source, target, or worker workflow receives it.
+The Reader App key belongs only to `sdlc-reader`, where only the source job's
+pinned token action reads it. That job never checks out or executes target code,
+and target source reaches candidate jobs only as a digest-bound bundle artifact.
 Agent inference credentials belong to `sdlc-agent`; they do not grant the
 controller's repository publishing authority. The CodeQL job has scoped
-`security-events: write`, but no controller App token and no candidate build.
-Candidate tests run in separate jobs without publishing credentials.
+`security-events: write`, but no App token and no candidate build.
+Candidate tests run in separate jobs without either App credential.
+
+Anyone who can read this repository can read target content mirrored here,
+including issue text, plans, logs, bundles, and other artifacts. The controller
+refuses a target whose identity drifted or whose visibility is wider than this
+repository's. Visibility does not prove that the two audiences match, so each
+target needs an access review per trust domain; see
+[Exposure and Trust Domains](operations.md#exposure-and-trust-domains). Target
+CI can run controller-published branches with the target's own credentials; see
+[Target CI](operations.md#target-ci).
 
 File policy is enforced outside the model: only coding, testing, and documentation
 may return feature edits in `report.changes`. Testing is limited to
@@ -1409,11 +1524,9 @@ mutation. Plan and evidence Markdown is treated as untrusted and issue-closing
 keywords are neutralized before the controller builds the final PR.
 
 The current prototype does not implement parallel coding integration, automatic
-rebasing, worker execution or publication against a registered target's source,
-deployment, automatic merging, or a Projects dashboard. Worker workflows do not
-yet accept target inputs, so a dispatch for a target lifecycle is rejected by
-GitHub; keep targets disabled until that support lands. Receipt artifacts are
+rebasing, deployment, automatic merging, or a Projects dashboard. Targets share
+this repository's policy and Node.js/npm check stack. Receipt artifacts are
 readable by anyone who can read the target's Actions runs, and the receipt
-workflow must be accessible to each target. The public-preview agent runtime and all live permissions still
-need a bounded pilot. Local fixtures and tests validate controller behavior;
+workflow must be accessible to each target. Cross-repository execution, the
+public-preview agent runtime, and all live permissions still need a bounded pilot. Local fixtures and tests validate controller behavior;
 they cannot guarantee model correctness or prove service-side configuration.

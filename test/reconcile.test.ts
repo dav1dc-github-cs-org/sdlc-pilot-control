@@ -46,6 +46,8 @@ interface Fixture {
   runs?: Record<number, unknown[] | Response>;
   issueFailures?: string[];
   brokenTargets?: number[];
+  controlVisibility?: string;
+  targetIdentity?: Record<number, Record<string, unknown>>;
 }
 
 function fixture(options: Fixture = {}) {
@@ -55,7 +57,9 @@ function fixture(options: Fixture = {}) {
   const minted: number[] = [];
   const listing = (numbers: number[]) => numbers.length ? numbers.map(number => ({ name: `${number}.json`, type: 'file' })) : status(404);
   const control = api('control', requests, (method, path) => {
-    if (path === '/repos/owner/control') return { id: 1, full_name: 'owner/control', default_branch: 'main' };
+    if (path === '/repos/owner/control') {
+      return { id: 1, full_name: 'owner/control', default_branch: 'main', visibility: options.controlVisibility ?? 'private' };
+    }
     if (path === '/repos/owner/control/git/ref/heads/main') return { object: { sha: controlSha } };
     if (path === `/repos/owner/control/git/ref/heads/${policy.stateBranch}`) return { object: { sha: 'state' } };
     if (path === `/repos/owner/control/compare/${receiptRef}...${controlSha}`) return { status: 'ahead' };
@@ -76,6 +80,9 @@ function fixture(options: Fixture = {}) {
     if (options.brokenTargets?.includes(target.id)) throw new Error('The target installation did not grant contents: write');
     const repository = target.repository;
     return api(repository, requests, (_method, path) => {
+      if (path === `/repos/${repository}`) {
+        return { id: target.id, full_name: repository, default_branch: 'main', visibility: 'private', ...options.targetIdentity?.[target.id] };
+      }
       const found = new RegExp(`^/repos/${repository}/issues/(\\d+)$`).exec(path);
       if (found) {
         if (options.issueFailures?.includes(`${repository}#${found[1]}`)) return status(502);
@@ -214,4 +221,20 @@ test('a control-repository event reconciles only the selected control issue', as
   assert.equal(await context.run({ event: { issue: { number: 3 } } }), true);
   assert.deepEqual(context.logs, ['Reconciled issue #3']);
   assert.deepEqual(context.minted, []);
+});
+
+test('a target whose identity drifted or whose content would widen its audience is never read', async () => {
+  for (const [options, reason] of [
+    [{ controlVisibility: 'public' }, /public control repository cannot process a private target/],
+    [{ targetIdentity: { 42: { id: 99 } } }, /identity changed/],
+    [{ targetIdentity: { 42: { full_name: 'octo/renamed' } } }, /identity changed/],
+  ] as const) {
+    const context = fixture({ targetActive: { 42: [5] }, ...options });
+    assert.equal(await context.run({ target: '42' }), false);
+    assert.equal(context.errors.length, 1);
+    assert.match(context.errors[0]!, reason);
+    assert.deepEqual(context.logs, []);
+    // Neither receipts nor issue bodies are read, so nothing from the target reaches control-plane state.
+    assert.equal(context.requests.some(request => /actions\/workflows|\/issues\/5$|contents\/targets\/42\/issues/.test(request)), false);
+  }
 });

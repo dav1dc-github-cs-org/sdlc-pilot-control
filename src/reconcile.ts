@@ -66,6 +66,8 @@ export async function reconcile(options: ReconcileOptions): Promise<boolean> {
       const api = await options.targetApi(target);
       const github = new GitHub(repository, policy, botLogin, controlApi, options.model,
         { id: target.id, repository: target.repository, api });
+      // Receipts persist target issue text into control-plane state, so identity and exposure are proven first.
+      await github.verifyTarget();
       const controller = new Controller(github, policy, options.clock);
       const ticked = new Set<number>();
       // Issue numbers repeat across repositories, so only this target's receipts and records select its issues.

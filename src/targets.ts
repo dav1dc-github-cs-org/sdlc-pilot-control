@@ -43,6 +43,20 @@ export function splitRepository(repository: string): { owner: string; repo: stri
   return { owner, repo };
 }
 
+const exposure = { private: 0, internal: 1, public: 2 } as const;
+
+// Target issue text, plans, logs, and code bundles land in control-plane state and runs, so the control plane may never be more visible.
+export function assertExposure(control: { visibility?: string }, target: { visibility?: string }): void {
+  const rank = (repository: { visibility?: string }) => {
+    const level = exposure[repository.visibility as keyof typeof exposure];
+    if (level === undefined) throw new Error('Repository visibility is unavailable; refusing to mirror target content');
+    return level;
+  };
+  if (rank(control) > rank(target)) {
+    throw new Error(`A ${control.visibility} control repository cannot process a ${target.visibility} target`);
+  }
+}
+
 export function parseRegistry(input: unknown, control?: TargetRef): Registry {
   const registry = registrySchema.parse(input);
   // The control repository is always the implicit self target; registering it would give one issue two state paths.

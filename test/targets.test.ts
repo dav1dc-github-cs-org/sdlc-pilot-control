@@ -206,9 +206,10 @@ test('foreign targets do not start work from a label alone', async () => {
 });
 
 test('the foreign baseline pins the target branch and the control revision and detects identity drift', async () => {
-  let identity = { id: 42, full_name: 'octo/app', default_branch: 'main' };
+  let identity: Record<string, unknown> = { id: 42, full_name: 'octo/app', default_branch: 'main', visibility: 'private' };
+  let controlRepo: Record<string, unknown> = { default_branch: 'main', visibility: 'private' };
   const github = foreign((method, path) => {
-    if (path === '/repos/owner/control') return { default_branch: 'main' };
+    if (path === '/repos/owner/control') return controlRepo;
     if (path === '/repos/owner/control/git/ref/heads/main') return { object: { sha: controlSha } };
     throw new Error(`Unexpected control request: ${method} ${path}`);
   }, (method, path) => {
@@ -221,6 +222,17 @@ test('the foreign baseline pins the target branch and the control revision and d
   await assert.rejects(github.baseline(), /identity changed/);
   identity = { ...identity, id: 42, full_name: 'octo/renamed' };
   await assert.rejects(github.baseline(), /identity changed/);
+  identity = { ...identity, full_name: 'octo/app' };
+  // Target content is mirrored into the control plane, so a wider audience there is refused before any read.
+  for (const [controlVisibility, targetVisibility, allowed] of [['public', 'public', true], ['private', 'public', true],
+    ['internal', 'internal', true], ['public', 'private', false], ['public', 'internal', false], ['internal', 'private', false],
+    [undefined, 'private', false], ['private', undefined, false]] as const) {
+    controlRepo = { default_branch: 'main', visibility: controlVisibility };
+    identity = { ...identity, visibility: targetVisibility };
+    if (allowed) assert.equal((await github.baseline()).sha, baseSha);
+    else await assert.rejects(github.baseline(), /control repository cannot process|visibility is unavailable/);
+  }
+  await assert.rejects(new GitHub(control.repository, policy, 'sdlc[bot]', api(() => ({}))).verifyTarget(), /No foreign target/);
 });
 
 test('intake-only control changes do not invalidate running lifecycles unless this binding changes', async () => {

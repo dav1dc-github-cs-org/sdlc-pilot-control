@@ -234,9 +234,11 @@ compiler upgrades require deliberate review and validation.
 | [Reconcile](src/reconcile.ts) | Issue and target selection, per-target failure isolation, stale-run rejection |
 | [Receipts](src/receipts.ts) | Authenticated intake receipts from registered targets and the scan cursor |
 | [Installation](src/installation.ts) | Per-target App tokens scoped by repository ID with exact permissions |
+| [Source](src/source.ts) | Target source fetched without execution into a digest-bound bundle, restored offline |
 | [Agent workflow](.github/workflows/sdlc-agent.md) | Fresh Copilot execution for each specialized role |
 | [Check workflow](.github/workflows/sdlc-checks.yml) | Deterministic security and testing jobs |
 | [Receipt workflow](.github/workflows/sdlc-intake-receipt.yml) | Credential-free event snapshot called by registered targets |
+| [Source workflow](.github/workflows/sdlc-source.yml) | Reader-zone fetch of a target's registered commits for agent and check jobs |
 
 Authoritative JSON state is stored on `sdlc-state`. Writes use the previous
 content SHA to reject conflicting updates. The controller is serialized;
@@ -249,8 +251,15 @@ configured App, trusted workflow revision, expected job, and exact source SHA.
 Registered target repositories can request work without holding any controller
 credential: a pinned, permission-free caller workflow records the label event,
 and the controller authenticates that receipt with a token scoped to the
-target's repository ID. Target worker execution is not implemented yet, so keep
-targets disabled. See [Registered Targets](docs/operations.md#registered-targets).
+target's repository ID. Commands are comments on the target issue. Workers run
+here: a separate `sdlc-reader` job uses a read-only Reader App to fetch the
+target's registered commits without executing them, and hands agent and check
+jobs a digest-bound Git bundle that they restore offline. Neither App credential
+reaches candidate code. The controller publishes the feature branch, final PR,
+and completion check in the target. Anyone who can read this repository can read
+mirrored target content, so register only targets in the same trust domain. See
+[Registered Targets](docs/operations.md#registered-targets). Targets have not yet
+completed a live pilot.
 
 State uses `schemaVersion: 2`. Valid version-1 records, with or without cost
 accounting, are upgraded automatically by the controller without resetting plans,

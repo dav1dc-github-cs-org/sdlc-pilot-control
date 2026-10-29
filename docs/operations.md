@@ -222,7 +222,7 @@ fields in rollbacks because older strict readers reject them.
 
 ## 2. Configure Environments
 
-Create both environments before enabling the controller. Limit deployment
+Create all three environments before enabling the controller. Limit deployment
 branches to this repository's default branch. Do not add a required reviewer
 unless you intentionally want a human checkpoint on every job.
 
@@ -231,7 +231,7 @@ name the branch. Substitute your repository and default branch.
 
 ```sh
 repo=OWNER/REPO
-for environment in sdlc-controller sdlc-agent; do
+for environment in sdlc-controller sdlc-agent sdlc-reader; do
   gh api -X PUT "/repos/$repo/environments/$environment" --input - <<'JSON'
 { "deployment_branch_policy": { "protected_branches": false, "custom_branch_policies": true } }
 JSON
@@ -276,6 +276,16 @@ Read-only repository access uses the workflow token in either mode.
 The generated workflow uses sandbox containers on GitHub-hosted runners. Docker
 is not a local development requirement. Do not run untrusted candidate tests
 on a persistent runner with organization credentials or access to production.
+
+### sdlc-reader
+
+This environment holds the [Reader App](#reader-app) credentials used only for
+[registered targets](#registered-targets): `SDLC_READER_PRIVATE_KEY` as an
+environment secret and `SDLC_READER_APP_ID` as an environment variable. Only the
+[source workflow](../.github/workflows/sdlc-source.yml) references it, and only
+for a target job. Leave it empty until you register a target, but create it
+anyway: a job that references a missing environment creates one without the
+default-branch restriction.
 
 ## 3. Protect Branches
 
@@ -466,15 +476,18 @@ gh api "/repos/$repo/actions/variables" --jq '.variables[] | "\(.name)=\(.value)
 gh api "/repos/$repo/actions/secrets" --jq '.secrets[].name'
 gh api "/repos/$repo/environments" --jq '.environments[].name'
 gh api "/repos/$repo/environments/sdlc-agent/secrets" --jq '.secrets | length'
+gh api "/repos/$repo/environments/sdlc-reader/secrets" --jq '.secrets[].name'
 gh api "/repos/$repo/rulesets" --jq '.[].name'
 gh api "/repos/$repo/codeowners/errors" --jq '.errors | length'
 gh api "/repos/$repo/labels" --jq '[.[].name] | index("agentic-SDLC")'
 gh api "/repos/$repo/contents/.github/workflows?ref=main" --jq '.[].name'
 ```
 
-`SDLC_APP_PRIVATE_KEY` must not appear in the repository secret list, and the
-`sdlc-agent` environment must hold zero secrets. Candidate workflows can request
-repository secrets; they cannot request another environment's. All four
+Neither `SDLC_APP_PRIVATE_KEY` nor `SDLC_READER_PRIVATE_KEY` may appear in the
+repository secret list, and the `sdlc-agent` environment must hold zero secrets.
+`sdlc-reader` holds only `SDLC_READER_PRIVATE_KEY`, and only once a target is
+registered. Candidate workflows can request repository secrets; they cannot
+request another environment's. The controller, agent, check, source, and receipt
 workflows must already exist on the default branch, and the codeowners and
 label checks must return `0` and a non-null index respectively.
 
@@ -509,11 +522,17 @@ network policies, CodeQL licensing, or Copilot behavior work in your organizatio
 ## Registered Targets
 
 This repository can act as a control plane for other repositories. A registered
-target receives only a secret-free caller workflow; state, workers, and the App
-key stay here. Target worker execution is not implemented yet: worker workflows
-reject target inputs, so keep every registry entry `"enabled": false` until that
-support lands. See [Cross-Repository Intake](architecture.md#cross-repository-intake)
-for the receipt checks.
+target receives only a secret-free caller workflow; state, workers, and both App
+keys stay here. A writer applies the intake label to a target issue, and the
+requester and writers post `/sdlc` commands as comments on that same issue. The
+feature branch, final PR, and `SDLC / Complete` check are published in the
+target. See [Cross-Repository Intake](architecture.md#cross-repository-intake)
+for the receipt checks and [Target Execution](architecture.md#target-execution)
+for source handoff and publication.
+
+Targets have not yet completed a live pilot. Register one disposable target
+first and run the [bounded pilot](#5-run-a-bounded-pilot) against it; local tests
+cannot prove the live Apps, artifact handoff, or target permissions.
 
 The intake pieces are:
 
@@ -562,6 +581,72 @@ If this repository is private or internal, allow target repositories to use its
 workflows under **Settings > Actions > General > Access**. Receipt artifacts
 contain the issue title and body and are visible to anyone who can read the
 target's Actions runs.
+
+### Reader App
+
+Workers never use the controller App to read target source. Create a second
+GitHub App with webhooks disabled and one repository permission, Contents read;
+Metadata read is added automatically. Install it under **Only select
+repositories** on target repositories alone; it needs no installation here.
+Store its private key and numeric App ID in the [`sdlc-reader`](#sdlc-reader)
+environment, never as repository secrets or variables.
+
+A read-scoped token minted with the controller App's key would not reduce that
+key's authority, and fetching parses untrusted Git data, so the fetching job
+holds no publishing key. For each target job, the source job mints a token for
+that one repository with Contents read only. It checks the target's identity and
+exposure, then fetches the registered commits into a bare repository with hooks,
+submodules, LFS, and credential helpers disabled, and uploads a Git bundle and
+manifest. It runs only this repository's code, installed with
+`npm ci --ignore-scripts`, and never checks out or runs target code.
+
+Agent and check jobs download that artifact, verify the manifest against their
+registered job and the bundle's SHA-256 digest, and restore the registered
+commits offline. They receive neither App credential. The restored repository's
+`origin` is the local bundle, and an agent's GitHub tools address this
+repository, so agents see the target issue only through lifecycle state.
+
+### Target Requirements
+
+- **Stack:** deterministic checks are the same as here: an npm lockfile,
+  `npm ci` and `npm audit`, TypeScript, Node's test runner with c8 coverage, and
+  CodeQL for JavaScript and TypeScript. Other stacks are blocked, not waived.
+- **Policy:** this repository's [policy](../.github/sdlc/policy.json) applies to
+  every target, including source, test, docs, and protected path patterns,
+  thresholds, and budgets. Lay the target out to match, or use a separate
+  control plane.
+- **Size:** the bundle carries the full history of the registered commits and
+  is limited to 256 MiB. A larger target fails its source job; history is never
+  silently truncated.
+- **CodeQL:** CodeQL scans target code in this repository's Actions. Confirm the
+  Code Security entitlement covers that use; a public control repository is not
+  a licensing workaround.
+
+### Exposure and Trust Domains
+
+Anyone who can read this repository can read what the pipeline mirrors from a
+target: issue text and plans in state, worker logs, source bundles, and other
+Actions artifacts. Before each source fetch and each reconciliation, the
+controller refuses a target whose repository ID or name no longer matches the
+registry, or whose visibility is wider than this repository's, ranked private,
+internal, then public.
+
+That check is necessary but not sufficient: two private repositories can have
+different readers. Register a target only after confirming that everyone who
+can read this repository may read the target, and use a separate control plane
+for a target with a narrower audience. This prototype repository is public, so
+the guard refuses every private or internal target here.
+
+### Target CI
+
+The controller App pushes intermediate feature branches and opens the final PR
+in the target. Those events can trigger the target's own workflows, which then
+run generated code with whatever secrets and token permissions the target
+grants. Review the target's workflows before registering it: keep `push` and
+`pull_request` CI low-privilege, keep deployment credentials behind protected
+environments, and never run candidate code from `pull_request_target`.
+
+### Manual Target Runs
 
 Run the controller manually with the `target` input set to a repository ID to
 scan that target immediately, optionally with `issue` for one target issue.

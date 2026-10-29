@@ -8,7 +8,7 @@ import { validateDependencyChanges } from './dependencies.ts';
 import { costSchema, lifecycleSchema, migrateLifecycle, reportSchema, targetRefSchema, type Change, type Cost, type Policy, type Report } from './contracts.ts';
 import { activeDecisions, assertPublishable, formatObservedModels, type Job, type JobIdentity, type Lifecycle, type TargetRef, type Task } from './lifecycle.ts';
 import { RetryablePlatformError, type Baseline, type Comment, type Issue, type Platform, type RecordState, type Run } from './controller.ts';
-import { receiptWorkflow, registryPath, runTitle, sameRepository, splitRepository, targetBindingChanged } from './targets.ts';
+import { assertExposure, receiptWorkflow, registryPath, runTitle, sameRepository, splitRepository, targetBindingChanged } from './targets.ts';
 
 export function workerFile(job: Pick<Job, 'stage'>): string {
   return ['scan', 'validate', 'integrate'].includes(job.stage) ? 'sdlc-checks.yml' : 'sdlc-agent.lock.yml';
@@ -133,13 +133,26 @@ export class GitHub implements Platform {
     } catch (error) { if (missing(error)) return false; throw error; }
   }
 
-  async baseline(): Promise<Baseline> {
+  // Every target contact first proves the registered identity and that mirroring its content cannot widen its audience.
+  async verifyTarget() {
+    if (!this.target) throw new Error('No foreign target is bound');
     const { data: repo } = await this.api.repos.get(this.scope);
-    if (this.target && (repo.id !== this.target.id || !sameRepository(repo.full_name, this.target.repository))) {
+    if (repo.id !== this.target.id || !sameRepository(repo.full_name, this.target.repository)) {
       throw new Error('Target repository identity changed; revalidate its registry entry before continuing');
     }
-    const baseline = { branch: repo.default_branch, sha: await this.head(repo.default_branch) };
-    return this.target ? { ...baseline, controlSha: (await this.controlRevision()).sha } : baseline;
+    const { data: control } = await this.controlApi.repos.get(this.control);
+    assertExposure(control, repo);
+    return { repo, control };
+  }
+
+  async baseline(): Promise<Baseline> {
+    if (this.target) {
+      const { repo, control } = await this.verifyTarget();
+      return { branch: repo.default_branch, sha: await this.head(repo.default_branch),
+        controlSha: await this.controlHead(control.default_branch) };
+    }
+    const { data: repo } = await this.api.repos.get(this.scope);
+    return { branch: repo.default_branch, sha: await this.head(repo.default_branch) };
   }
 
   async controlRevision(): Promise<{ branch: string; sha: string }> {
