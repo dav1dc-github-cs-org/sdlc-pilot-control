@@ -4,8 +4,8 @@
     {
       "id": 1438907681,
       "repository": "dav1dc-github-cs-org/sdlc-pilot-target",
-      "enabled": false,
-      "activatedAt": "2026-11-27T20:58:43Z",
+      "enabled": true,
+      "activatedAt": "2026-11-27T21:56:52Z",
       "intake": {
         "workflow": ".github/workflows/sdlc-intake.yml",
         "receiptRef": "5fad62976806fd88335cded0415b98520d8ee15a"
